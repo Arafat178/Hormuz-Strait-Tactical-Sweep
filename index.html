@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hormuz Strait: Tactical Sonar Sweep V3</title>
+    <style>
+        /* --- Tactical UI & Deep Sea Variables --- */
+        :root {
+            --sea-surface: rgba(10, 30, 55, 0.65);
+            --sea-hover: rgba(11, 130, 226, 0.7);
+            --sea-cleared: transparent;
+            --danger-glow: inset 0 0 12px rgba(255, 50, 0, 0.4);
+            --wrong-flag: rgba(200, 0, 0, 0.85);
+        }
+
+        body {
+            margin: 0; padding: 10px;
+            background-color: #050a10; color: #d0e0f0;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex; flex-direction: column; align-items: center;
+            user-select: none; /* Prevents text selection while dragging */
+            overflow: hidden; /* Prevents whole page scrolling on mobile */
+        }
+
+        h2 { 
+            margin: 5px 0 15px 0; letter-spacing: 2px; 
+            color: #00ffff; text-shadow: 0 0 10px #00ffff55; 
+            text-align: center; font-size: 22px;
+        }
+
+        #dashboard {
+            display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+            margin-bottom: 15px; background: rgba(10, 20, 30, 0.9); 
+            padding: 10px 15px; border: 1px solid #00ffff; border-radius: 5px;
+            font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(0, 255, 255, 0.1);
+            align-items: center; width: 95vw; max-width: 1000px;
+            box-sizing: border-box;
+        }
+
+        .stat-box {
+            background: rgba(0, 255, 255, 0.1);
+            padding: 5px 10px; border-radius: 4px; border: 1px solid rgba(0, 255, 255, 0.3);
+        }
+
+        button, select {
+            background: rgba(0, 255, 255, 0.1); color: #00ffff; 
+            border: 1px solid #00ffff; padding: 6px 12px; 
+            font-family: inherit; font-size: 14px; font-weight: bold;
+            cursor: pointer; transition: all 0.2s ease; border-radius: 4px;
+        }
+        
+        button:active { transform: scale(0.95); }
+
+        #mode-btn { background: rgba(0, 255, 100, 0.2); color: #00ff66; border-color: #00ff66; }
+        #mode-btn.flag-mode { background: rgba(255, 50, 50, 0.2); color: #ff3333; border-color: #ff3333; }
+        #sonar-btn { background: rgba(200, 0, 255, 0.2); color: #cc00ff; border-color: #cc00ff; }
+
+        /* --- Map Viewport (For Pan & Zoom) --- */
+        #map-viewport {
+            width: 95vw; max-width: 1200px; height: 70vh;
+            border: 2px solid #334455; box-shadow: 0 10px 30px rgba(0,0,0,0.9);
+            overflow: hidden; position: relative; cursor: grab; background: #000;
+            touch-action: none; /* Crucial for custom touch gestures on mobile */
+        }
+        #map-viewport:active { cursor: grabbing; }
+
+        /* --- Map Canvas & Overlay --- */
+        #theater-container {
+            position: absolute; top: 0; left: 0;
+            background-image: url('hormuj.jpg');
+            background-size: cover; background-position: center;
+            transform-origin: 0 0; transition: transform 0.05s linear; 
+        }
+
+        /* --- Individual Grid Cells --- */
+        .cell {
+            position: absolute; background-color: var(--sea-surface);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            border-left: 1px solid rgba(255,255,255,0.1);
+            border-bottom: 1px solid rgba(0,0,0,0.5);
+            border-right: 1px solid rgba(0,0,0,0.5);
+            display: flex; justify-content: center; align-items: center;
+            font-weight: bold; font-size: 15px; cursor: pointer;
+            box-sizing: border-box; transition: background-color 0.2s;
+        }
+
+        /* Hover effect only works on non-revealed cells and non-touch devices */
+        @media (hover: hover) {
+            .cell:hover:not(.revealed) { background-color: var(--sea-hover); }
+        }
+
+        .cell.revealed {
+            background-color: var(--sea-cleared);
+            border: 1px solid rgba(0, 255, 255, 0.05); cursor: default;
+        }
+
+        /* --- Environmental Feedback --- */
+        .high-risk { box-shadow: var(--danger-glow); }
+        .mine { background-color: rgba(200, 20, 20, 0.8) !important; font-size: 18px; }
+        .wrong-flag { background-color: var(--wrong-flag); position: relative; }
+        .wrong-flag::after { content: "X"; position: absolute; color: white; font-size: 20px; }
+
+        /* Animations */
+        @keyframes ripple {
+            0% { transform: scale(0.8); background-color: rgba(0, 255, 255, 0.6); }
+            100% { transform: scale(1); background-color: var(--sea-cleared); }
+        }
+        .anim-ripple { animation: ripple 0.3s ease-out forwards; }
+        
+        @keyframes pulse-error {
+            0%, 100% { opacity: 1; } 50% { opacity: 0.5; background: #555; }
+        }
+        .blink { animation: pulse-error 0.3s ease-out; }
+    </style>
+</head>
+<body>
+
+    <h2>HORMUZ STRAIT: TACTICAL SWEEP</h2>
+    <div id="dashboard">
+        <div class="stat-box">💣 <span id="mine-counter">--</span></div>
+        <div class="stat-box">⏱️ <span id="timer-display">000</span></div>
+        
+        <button id="mode-btn" onclick="toggleMode()">MODE: ⛏️ DIG</button>
+        <button id="sonar-btn" onclick="useSonar()">📡 SONAR (3)</button>
+        
+        <select id="difficulty-select" onchange="changeDifficulty()">
+            <option value="0.10">Low Risk (10%)</option>
+            <option value="0.16" selected>Normal (16%)</option>
+            <option value="0.20">High Risk (20%)</option>
+        </select>
+
+        <button onclick="restartSweep()">RESTART</button>
+    </div>
+
+    <div id="map-viewport">
+        <div id="theater-container"></div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 1. ENGINE CONFIGURATION & STATE
+        // ==========================================
+        const CELL_SIZE = 22;      
+        let MINE_DENSITY = 0.16; 
+
+        let state = {
+            totalMines: 0, flagsPlaced: 0, cellsRevealed: 0, totalSafeCells: 0,
+            isGameOver: false, isFirstClick: true
+        };
+
+        let currentMode = 'DIG'; // 'DIG' or 'FLAG'
+        let sonarUses = 3;
+
+        let gridMap = new Map(); 
+        let activeWaterCells = []; 
+        const colorSpectrum = ["", "#00ffff", "#00ff66", "#ffcc00", "#ff3333", "#ff0099", "#cc00ff", "#ffffff", "#aaaaaa"];
+
+        let timerInterval = null;
+        let secondsElapsed = 0;
+
+        // Pan & Zoom Variables
+        let scale = 1, panX = 0, panY = 0;
+        let isDraggingMap = false;
+        let startX, startY;
+        let initialPinchDistance = null;
+
+        // ==========================================
+        // 2. SYNTHETIC AUDIO SUBSYSTEM
+        // ==========================================
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playTone(freq, type, duration, vol) {
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        }
+        
+        const sound = {
+            click: () => playTone(600, 'sine', 0.1, 0.05),
+            chord: () => playTone(800, 'triangle', 0.15, 0.05),
+            flag: () => playTone(1200, 'square', 0.1, 0.02),
+            sonar: () => playTone(900, 'sine', 0.4, 0.1),
+            boom: () => { playTone(100, 'sawtooth', 0.8, 0.3); playTone(50, 'square', 1.0, 0.4); },
+            smallBoom: () => playTone(150, 'sawtooth', 0.2, 0.1)
+        };
+
+        // ==========================================
+        // 3. UI CONTROLS & NEW FEATURES
+        // ==========================================
+        function toggleMode() {
+            const btn = document.getElementById('mode-btn');
+            if (currentMode === 'DIG') {
+                currentMode = 'FLAG';
+                btn.innerText = "MODE: 🚩 FLAG";
+                btn.classList.add('flag-mode');
+            } else {
+                currentMode = 'DIG';
+                btn.innerText = "MODE: ⛏️ DIG";
+                btn.classList.remove('flag-mode');
+            }
+        }
+
+        function useSonar() {
+            if (state.isGameOver || sonarUses <= 0 || state.isFirstClick) return;
+            
+            // Find hidden, safe, unflagged cells
+            let safeHidden = activeWaterCells.filter(c => !c.isRevealed && !c.isMine && !c.isFlagged);
+            if(safeHidden.length === 0) return;
+            
+            sound.sonar();
+            sonarUses--;
+            document.getElementById('sonar-btn').innerText = `📡 SONAR (${sonarUses})`;
+
+            // Randomly select up to 3 cells to reveal
+            safeHidden.sort(() => Math.random() - 0.5);
+            let revealCount = Math.min(3, safeHidden.length);
+            
+            for(let i = 0; i < revealCount; i++) {
+                let c = safeHidden[i];
+                c.dom.style.backgroundColor = "rgba(200, 0, 255, 0.6)"; // Highlight sonar effect
+                setTimeout(() => { executeBFS(c); }, 300);
+            }
+        }
+
+        // ==========================================
+        // 4. PAN & ZOOM MECHANICS (Mobile & Desktop)
+        // ==========================================
+        const viewport = document.getElementById('map-viewport');
+        const theater = document.getElementById('theater-container');
+
+        // Desktop Mouse Scroll
+        viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomAmount = e.deltaY * -0.001;
+            scale = Math.min(Math.max(0.5, scale + zoomAmount), 3);
+            applyTransform();
+        });
+
+        // Desktop Mouse Drag
+        viewport.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; 
+            isDraggingMap = false;
+            startX = e.clientX - panX;
+            startY = e.clientY - panY;
+        });
+
+        viewport.addEventListener('mousemove', (e) => {
+            if (e.buttons === 1) { 
+                isDraggingMap = true;
+                panX = e.clientX - startX;
+                panY = e.clientY - startY;
+                applyTransform();
+            }
+        });
+
+        viewport.addEventListener('mouseup', () => {
+            setTimeout(() => isDraggingMap = false, 50); 
+        });
+
+        // Mobile Touch Pan & Zoom
+        viewport.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                isDraggingMap = false;
+                startX = e.touches[0].clientX - panX;
+                startY = e.touches[0].clientY - panY;
+            } else if (e.touches.length === 2) {
+                initialPinchDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+            }
+        }, {passive: false});
+
+        viewport.addEventListener('touchmove', (e) => {
+            e.preventDefault(); // Prevents whole screen from moving
+            if (e.touches.length === 1) {
+                isDraggingMap = true;
+                panX = e.touches[0].clientX - startX;
+                panY = e.touches[0].clientY - startY;
+                applyTransform();
+            } else if (e.touches.length === 2 && initialPinchDistance) {
+                let currentDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                let zoomAmount = (currentDistance - initialPinchDistance) * 0.01;
+                scale = Math.min(Math.max(0.5, scale + zoomAmount), 3);
+                initialPinchDistance = currentDistance;
+                applyTransform();
+            }
+        }, {passive: false});
+
+        viewport.addEventListener('touchend', () => {
+            setTimeout(() => isDraggingMap = false, 50);
+            initialPinchDistance = null;
+        });
+
+        function applyTransform() {
+            theater.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+        }
+
+        // ==========================================
+        // 5. TOPOGRAPHICAL SCANNER (Image Analysis)
+        // ==========================================
+        function initRadar() {
+            const img = new Image();
+            img.src = 'hormuj.jpg';
+            
+            img.onload = function() {
+                theater.style.width = img.width + 'px';
+                theater.style.height = img.height + 'px';
+
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width; canvas.height = img.height;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(img, 0, 0);
+                const imgData = ctx.getImageData(0, 0, img.width, img.height).data;
+
+                const cols = Math.floor(img.width / CELL_SIZE);
+                const rows = Math.floor(img.height / CELL_SIZE);
+                const frag = document.createDocumentFragment();
+
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        if (isWaterGeometry(imgData, img.width, r, c)) {
+                            createCellNode(r, c, frag);
+                        }
+                    }
+                }
+
+                theater.appendChild(frag);
+                state.totalMines = Math.floor(activeWaterCells.length * MINE_DENSITY);
+                state.totalSafeCells = activeWaterCells.length - state.totalMines;
+                updateDashboard();
+            };
+        }
+
+        function isWaterGeometry(imgData, imgWidth, r, c) {
+            let waterVotes = 0;
+            const offset = Math.floor(CELL_SIZE / 4); 
+            const points = [
+                { x: c * CELL_SIZE + CELL_SIZE/2, y: r * CELL_SIZE + CELL_SIZE/2 },
+                { x: c * CELL_SIZE + offset, y: r * CELL_SIZE + offset },
+                { x: c * CELL_SIZE + CELL_SIZE - offset, y: r * CELL_SIZE + offset },
+                { x: c * CELL_SIZE + offset, y: r * CELL_SIZE + CELL_SIZE - offset },
+                { x: c * CELL_SIZE + CELL_SIZE - offset, y: r * CELL_SIZE + CELL_SIZE - offset }
+            ];
+
+            points.forEach(p => {
+                let idx = (Math.floor(p.y) * imgWidth + Math.floor(p.x)) * 4;
+                let red = imgData[idx], green = imgData[idx+1], blue = imgData[idx+2];
+                if (blue > red + 20 && blue >= green - 5) waterVotes++;
+            });
+            return waterVotes >= 3;
+        }
+
+        // ==========================================
+        // 6. SPATIAL GRID GENERATION
+        // ==========================================
+        function createCellNode(r, c, fragment) {
+            const div = document.createElement('div');
+            div.className = 'cell';
+            div.style.width = CELL_SIZE + 'px'; div.style.height = CELL_SIZE + 'px';
+            div.style.left = (c * CELL_SIZE) + 'px'; div.style.top = (r * CELL_SIZE) + 'px';
+
+            const cellObj = {
+                r: r, c: c, isMine: false, isRevealed: false, isFlagged: false, neighborMines: 0,
+                dom: div 
+            };
+
+            // Main interaction logic routed based on DIG/FLAG mode
+            div.addEventListener('click', (e) => {
+                if (isDraggingMap || state.isGameOver) return;
+                
+                if (currentMode === 'FLAG' && !cellObj.isRevealed) {
+                    processRightClick(cellObj);
+                } else if (currentMode === 'DIG') {
+                    processLeftClick(cellObj);
+                }
+            });
+
+            // Desktop Right-Click always places flag regardless of mode
+            div.addEventListener('contextmenu', (e) => { 
+                e.preventDefault(); 
+                if(!isDraggingMap && !state.isGameOver) processRightClick(cellObj); 
+            });
+
+            fragment.appendChild(div);
+            gridMap.set(`${r},${c}`, cellObj);
+            activeWaterCells.push(cellObj);
+        }
+
+        function getNeighbors(cell) {
+            let neighbors = [];
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    if (i === 0 && j === 0) continue;
+                    let n = gridMap.get(`${cell.r + i},${cell.c + j}`);
+                    if (n) neighbors.push(n);
+                }
+            }
+            return neighbors;
+        }
+
+        // ==========================================
+        // 7. THERMODYNAMIC LOGIC & MECHANICS
+        // ==========================================
+        function deployMines(safeCell) {
+            let validPool = activeWaterCells.filter(c => 
+                Math.abs(c.r - safeCell.r) > 1 || Math.abs(c.c - safeCell.c) > 1
+            );
+
+            for (let i = validPool.length - 1; i > 0; i--) {
+                let j = Math.floor(Math.random() * (i + 1));
+                [validPool[i], validPool[j]] = [validPool[j], validPool[i]];
+            }
+
+            for (let i = 0; i < state.totalMines; i++) {
+                validPool[i].isMine = true;
+            }
+        }
+
+        function computeProximity() {
+            activeWaterCells.forEach(cell => {
+                if (cell.isMine) return;
+                let mines = getNeighbors(cell).filter(n => n.isMine).length;
+                cell.neighborMines = mines;
+            });
+        }
+
+        function processLeftClick(cell) {
+            if (cell.isFlagged) return;
+
+            if (cell.isRevealed) { executeChord(cell); return; }
+
+            if (state.isFirstClick) {
+                deployMines(cell);
+                computeProximity();
+                startTimer();
+                state.isFirstClick = false;
+            }
+
+            if (cell.isMine) { triggerDefeat(cell); return; }
+
+            executeBFS(cell);
+            sound.click();
+            verifyIntegrity();
+        }
+
+        function processRightClick(cell) {
+            if (cell.isRevealed) return;
+
+            if (cell.isFlagged) {
+                cell.isFlagged = false; cell.dom.innerText = ""; state.flagsPlaced--;
+            } else {
+                cell.isFlagged = true; cell.dom.innerText = "🚩"; state.flagsPlaced++;
+                sound.flag();
+            }
+            updateDashboard();
+        }
+
+        function executeChord(cell) {
+            let neighbors = getNeighbors(cell);
+            let flagCount = neighbors.filter(n => n.isFlagged).length;
+
+            if (flagCount === cell.neighborMines && flagCount > 0) {
+                sound.chord();
+                let detonated = false;
+                neighbors.forEach(n => {
+                    if (!n.isRevealed && !n.isFlagged) {
+                        if (n.isMine) detonated = n;
+                        else executeBFS(n);
+                    }
+                });
+                if (detonated) triggerDefeat(detonated);
+                else verifyIntegrity();
+            } else {
+                neighbors.filter(n => !n.isRevealed && !n.isFlagged).forEach(n => {
+                    n.dom.classList.add("blink");
+                    setTimeout(() => n.dom.classList.remove("blink"), 300);
+                });
+            }
+        }
+
+        function executeBFS(startCell) {
+            if(startCell.isRevealed) return;
+            let queue = [];
+            let readPointer = 0; 
+            
+            function process(c) {
+                c.isRevealed = true;
+                state.cellsRevealed++;
+                c.dom.classList.add('revealed', 'anim-ripple');
+                
+                if (c.neighborMines > 0) {
+                    c.dom.innerText = c.neighborMines;
+                    c.dom.style.color = colorSpectrum[c.neighborMines];
+                    if(c.neighborMines >= 3) c.dom.classList.add('high-risk');
+                } else {
+                    queue.push(c); 
+                }
+            }
+
+            process(startCell);
+
+            while (readPointer < queue.length) {
+                let current = queue[readPointer++];
+                let neighbors = getNeighbors(current);
+                for (let i = 0; i < neighbors.length; i++) {
+                    let n = neighbors[i];
+                    if (!n.isRevealed && !n.isFlagged) {
+                        process(n);
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // 8. TIME, DIFFICULTY & EVENT RESOLUTIONS
+        // ==========================================
+        function startTimer() {
+            if (timerInterval) return;
+            timerInterval = setInterval(() => {
+                secondsElapsed++;
+                document.getElementById('timer-display').innerText = String(secondsElapsed).padStart(3, '0');
+            }, 1000);
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
+
+        function changeDifficulty() {
+            MINE_DENSITY = parseFloat(document.getElementById('difficulty-select').value);
+            restartSweep();
+        }
+
+        function restartSweep() {
+            stopTimer();
+            secondsElapsed = 0;
+            sonarUses = 3;
+            document.getElementById('timer-display').innerText = "000";
+            document.getElementById('sonar-btn').innerText = `📡 SONAR (${sonarUses})`;
+            
+            state = {
+                totalMines: 0, flagsPlaced: 0, cellsRevealed: 0, totalSafeCells: 0,
+                isGameOver: false, isFirstClick: true
+            };
+            
+            theater.innerHTML = ""; 
+            gridMap.clear();
+            activeWaterCells = [];
+            
+            scale = 1; panX = 0; panY = 0;
+            applyTransform();
+
+            initRadar(); 
+        }
+
+        function verifyIntegrity() {
+            if (state.cellsRevealed === state.totalSafeCells) {
+                state.isGameOver = true;
+                stopTimer();
+                activeWaterCells.filter(c => c.isMine && !c.isFlagged).forEach(c => {
+                    c.isFlagged = true; c.dom.innerText = "🚩";
+                });
+                state.flagsPlaced = state.totalMines;
+                updateDashboard();
+                setTimeout(() => alert(`MISSION SUCCESS.\nTime: ${secondsElapsed} seconds.`), 200);
+            }
+        }
+
+        function triggerDefeat(fatalCell) {
+            state.isGameOver = true;
+            stopTimer();
+            sound.boom();
+            fatalCell.dom.style.backgroundColor = '#ffffff'; 
+            
+            activeWaterCells.forEach(c => {
+                if (!c.isMine && c.isFlagged) {
+                    c.dom.classList.add('wrong-flag'); 
+                }
+            });
+
+            let unrevealedMines = activeWaterCells.filter(c => c.isMine && !c.isFlagged && c !== fatalCell);
+            
+            for (let i = unrevealedMines.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [unrevealedMines[i], unrevealedMines[j]] = [unrevealedMines[j], unrevealedMines[i]];
+            }
+
+            let index = 0;
+            function detonateNext() {
+                if (index < unrevealedMines.length) {
+                    let c = unrevealedMines[index];
+                    c.dom.classList.add('revealed', 'mine');
+                    c.dom.innerText = "💣";
+                    if(index % 3 === 0) sound.smallBoom(); 
+                    index++;
+                    setTimeout(detonateNext, 40); 
+                }
+            }
+            detonateNext();
+        }
+
+        function updateDashboard() {
+            document.getElementById('mine-counter').innerText = 
+                String(Math.max(0, state.totalMines - state.flagsPlaced)).padStart(3, '0');
+        }
+
+        window.onload = initRadar;
+
+    </script>
+</body>
+</html>
